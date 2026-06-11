@@ -1,0 +1,22 @@
+demo-platform has been deployed.
+
+Release name : {{ .Release.Name }}
+Chart version: {{ .Chart.Version }}
+Namespace    : {{ .Release.Namespace }}
+
+Components included in this release:
+{{- if .Values.nginx }}
+  ✓ nginx   (web entry point)
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+  ✓ postgresql (database)
+{{- end }}
+{{- if .Values.redis.enabled }}
+  ✓ redis   (cache / session store)
+{{- end }}
+
+To verify the deployment:
+  kubectl get pods -n {{ .Release.Namespace }}
+
+To retrieve the nginx service address:
+  kubectl get svc -n {{ .Release.Namespace }} -l app.kubernetes.io/name=nginx

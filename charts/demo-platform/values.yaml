@@ -1,0 +1,97 @@
+# ─── Global overrides ─────────────────────────────────────────────────────────
+# Override the container image registry for all sub-charts (useful for
+# air-gapped environments or private mirrors).
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+# ─── nginx ────────────────────────────────────────────────────────────────────
+# Acts as the platform web entry point / ingress proxy.
+nginx:
+  replicaCount: 1
+
+  image:
+    registry: docker.io
+    repository: bitnami/nginx
+    tag: ""  # defaults to chart appVersion
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+  livenessProbe:
+    enabled: true
+  readinessProbe:
+    enabled: true
+
+# ─── postgresql ───────────────────────────────────────────────────────────────
+# Primary relational database for platform workloads.
+postgresql:
+  enabled: true
+
+  image:
+    registry: docker.io
+    repository: bitnami/postgresql
+    tag: ""
+
+  auth:
+    postgresPassword: ""   # set via sealed-secret / external-secrets in prod
+    username: "app"
+    password: ""
+    database: "app"
+
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  readReplicas:
+    replicaCount: 0
+
+# ─── redis ────────────────────────────────────────────────────────────────────
+# In-memory cache / session store. Disabled by default; enable for environments
+# that require caching.
+redis:
+  enabled: false
+
+  image:
+    registry: docker.io
+    repository: bitnami/redis
+    tag: ""
+
+  auth:
+    enabled: true
+    password: ""   # set via sealed-secret / external-secrets in prod
+
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+  replica:
+    replicaCount: 0

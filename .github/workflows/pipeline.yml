@@ -1,0 +1,365 @@
+---
+# pipeline.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Secure Kubernetes Platform Supply Chain Pipeline
+#
+# Stages:
+#   1. render       — resolve Helm deps and render manifests (source of truth)
+#   2. sbom         — generate platform SBOM with Syft (SPDX-JSON)
+#   3. scan         — Grype (SBOM-based) + Trivy (image-based) vulnerability scan
+#   4. package      — package Helm chart and push to GHCR OCI registry
+#   5. sign         — sign chart and attest SBOM with Cosign (keyless OIDC)
+#   6. provenance   — generate SLSA Level 3 provenance (slsa-github-generator)
+#   7. release      — create a versioned GitHub release with all artifacts
+#
+# Signing vs Provenance:
+#   Cosign  → proves an artifact was produced by *this* pipeline (integrity).
+#   SLSA    → records exactly *how* the artifact was built (build provenance).
+#   Both are required for a complete supply chain attestation.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Platform Supply Chain Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+env:
+  CHART_NAME: demo-platform
+  CHART_DIR: ./charts/demo-platform
+  VALUES_FILE: values/values-prod.yaml
+  REGISTRY: ghcr.io
+  # OCI path where the Helm chart is published
+  CHART_REGISTRY_PATH: ${{ github.repository_owner }}/charts
+
+# Minimal default permissions; individual jobs escalate as needed.
+permissions:
+  contents: read
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Stage 1 — Render Platform & Extract Images
+  # ───────────────────────────────────────────────────────────────────────────
+  render:
+    name: Render Platform & Extract Images
+    runs-on: ubuntu-latest
+    outputs:
+      chart-version: ${{ steps.chart-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install yq
+        uses: mikefarah/yq-action@master
+        with:
+          cmd: yq --version
+
+      - name: Resolve Helm dependencies
+        run: helm dependency update ${{ env.CHART_DIR }}
+
+      - name: Render platform manifests (source of truth)
+        # Rendering produces the exact Kubernetes objects that will be applied.
+        # This — not the values files — is what we extract images from.
+        run: |
+          helm template demo ${{ env.CHART_DIR }} \
+            -f ${{ env.VALUES_FILE }} > rendered.yaml
+          echo "Rendered $(wc -l < rendered.yaml) lines of manifests."
+
+      - name: Extract container images
+        run: |
+          chmod +x supply-chain/extract-images.sh
+          ./supply-chain/extract-images.sh rendered.yaml images.txt
+
+      - name: Get chart version
+        id: chart-version
+        run: |
+          version=$(yq '.version' ${{ env.CHART_DIR }}/Chart.yaml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload render artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: |
+            rendered.yaml
+            images.txt
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Stage 2 — Generate Platform SBOM (Syft)
+  # ───────────────────────────────────────────────────────────────────────────
+  sbom:
+    name: Generate Platform SBOM
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download rendered artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: rendered-manifests
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM for all platform images
+        # Syft scans each container image pulled from the registry and produces
+        # an SPDX-JSON document.  The supply-chain/sbom.sh script merges all
+        # per-image documents into a single platform-level sbom.json.
+        run: |
+          chmod +x supply-chain/sbom.sh
+          ./supply-chain/sbom.sh images.txt sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Stage 3 — Vulnerability Scanning
+  # ───────────────────────────────────────────────────────────────────────────
+  scan:
+    name: Vulnerability Scanning
+    needs: sbom
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download rendered artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: rendered-manifests
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+
+      - name: Install Grype
+        uses: anchore/scan-action/download-grype@v6
+
+      - name: Install Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'version'
+          exit-code: '0'
+
+      - name: Scan SBOM with Grype (SBOM-based)
+        # Grype's role: validate the *known* dependency tree captured in the SBOM.
+        # Fails the pipeline on CRITICAL vulnerabilities.
+        run: grype "sbom:sbom.json" --fail-on critical
+
+      - name: Scan images with Trivy (image-based)
+        # Trivy's role: second-opinion scan directly against the live image layers.
+        # Uses a different vulnerability database to catch anything Grype may miss.
+        env:
+          FAIL_ON_HIGH: ${{ vars.FAIL_ON_HIGH || 'false' }}
+        run: |
+          chmod +x supply-chain/scan.sh
+          # Run only the Trivy portion; Grype was already executed above.
+          while IFS= read -r image; do
+            [[ -z "$image" ]] && continue
+            echo "Trivy scanning: $image"
+            SEVERITY="CRITICAL"
+            [[ "$FAIL_ON_HIGH" == "true" ]] && SEVERITY="CRITICAL,HIGH"
+            trivy image \
+              --exit-code 1 \
+              --severity "$SEVERITY" \
+              --no-progress \
+              "$image"
+          done < images.txt
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Stage 4 — Package & Publish Helm Chart to GHCR
+  # Only runs on pushes to main or version tags (not PRs).
+  # ───────────────────────────────────────────────────────────────────────────
+  package:
+    name: Package & Publish Chart
+    needs: scan
+    if: >
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write    # required for OIDC signing (Cosign / SLSA)
+      contents: write    # required for GitHub releases
+      packages: write    # required for GHCR push
+    outputs:
+      chart-file: ${{ steps.package.outputs.chart-file }}
+      chart-ref:  ${{ steps.push.outputs.chart-ref }}
+      hashes:     ${{ steps.hash.outputs.hashes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+
+      - name: Resolve Helm dependencies
+        run: helm dependency update ${{ env.CHART_DIR }}
+
+      - name: Package Helm chart
+        id: package
+        run: |
+          helm package ${{ env.CHART_DIR }}
+          chart_file=$(ls ${{ env.CHART_NAME }}-*.tgz)
+          echo "chart-file=$chart_file" >> "$GITHUB_OUTPUT"
+          echo "Packaged: $chart_file"
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ${{ env.REGISTRY }} \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Push chart to OCI registry
+        id: push
+        run: |
+          output=$(helm push "${{ steps.package.outputs.chart-file }}" \
+            "oci://${{ env.REGISTRY }}/${{ env.CHART_REGISTRY_PATH }}" 2>&1)
+          echo "$output"
+          digest=$(echo "$output" | grep "Digest:" | awk '{print $2}')
+          ref="${{ env.REGISTRY }}/${{ env.CHART_REGISTRY_PATH }}/${{ env.CHART_NAME }}@${digest}"
+          echo "chart-ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Published: $ref"
+
+      - name: Compute artifact hashes (for SLSA provenance)
+        # sha256sum produces: <hash>  <filename>
+        # This format is consumed by the SLSA generic generator.
+        id: hash
+        run: |
+          sha256sum "${{ steps.package.outputs.chart-file }}" sbom.json > hashes.txt
+          echo "hashes=$(base64 -w0 hashes.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart
+          path: |
+            ${{ steps.package.outputs.chart-file }}
+            sbom.json
+            hashes.txt
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Stage 5 — Sign Artifacts with Cosign (keyless OIDC)
+  #
+  # Cosign's role: *signing* — proves the artifacts were produced by this
+  # authenticated workflow run.  It does NOT generate provenance; that is
+  # SLSA's job (Stage 6).
+  # ───────────────────────────────────────────────────────────────────────────
+  sign:
+    name: Sign Artifacts with Cosign
+    needs: package
+    if: >
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for keyless OIDC signing
+      packages: write   # required to write signatures to GHCR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install Helm (for registry login)
+        uses: azure/setup-helm@v4
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ${{ env.REGISTRY }} \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Sign Helm chart (OCI artifact)
+        # Cosign signs the OCI digest — not the .tgz — so the signature is
+        # permanently linked to the immutable content-addressable artifact.
+        run: |
+          cosign sign --yes "${{ needs.package.outputs.chart-ref }}"
+
+      - name: Attach SBOM as attestation to chart
+        # This attaches the platform SBOM to the chart in the OCI registry,
+        # making it discoverable by any consumer that runs:
+        #   cosign verify-attestation --type spdx <chart-ref>
+        run: |
+          cosign attest \
+            --yes \
+            --predicate sbom.json \
+            --type spdx \
+            "${{ needs.package.outputs.chart-ref }}"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Stage 6 — Generate SLSA Level 3 Provenance
+  #
+  # SLSA's role: *provenance* — records exactly how and where the artifacts
+  # were built (source repo, commit SHA, build inputs, workflow run ID).
+  # This is distinct from signing: signing says "this is authentic", provenance
+  # says "this is how it was made".
+  #
+  # The slsa-github-generator reusable workflow runs in an isolated environment
+  # and produces a signed .intoto.jsonl provenance file.
+  # ───────────────────────────────────────────────────────────────────────────
+  provenance:
+    name: Generate SLSA Provenance
+    needs: package
+    if: >
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    permissions:
+      actions:  read    # to read the workflow run for provenance context
+      id-token: write   # to sign the provenance with OIDC
+      contents: write   # to upload provenance to the GitHub release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      # base64-encoded sha256 hashes of all artifacts we want to attest.
+      # Format (from sha256sum): "<hash>  <filename>\n..."
+      base64-subjects: "${{ needs.package.outputs.hashes }}"
+      # Automatically upload the .intoto.jsonl provenance file to the release.
+      upload-assets: true
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Stage 7 — Create GitHub Release
+  # Only runs on version tags (v*.*.*).
+  # ───────────────────────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [package, sign, provenance]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download chart artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: helm-chart
+
+      - name: Create versioned GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ needs.package.outputs.chart-file }}
+            sbom.json

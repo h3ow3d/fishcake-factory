@@ -1,0 +1,46 @@
+# values-dev.yaml
+# Development environment overrides.
+# Prioritises low resource consumption and fast iteration over resilience.
+
+# ─── nginx ────────────────────────────────────────────────────────────────────
+nginx:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+# ─── postgresql ───────────────────────────────────────────────────────────────
+postgresql:
+  auth:
+    postgresPassword: "dev-insecure-password"  # never use in production
+    password: "dev-insecure-password"
+  primary:
+    persistence:
+      size: 1Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+# ─── redis ────────────────────────────────────────────────────────────────────
+redis:
+  enabled: true
+  auth:
+    password: "dev-insecure-password"
+  master:
+    persistence:
+      size: 1Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
