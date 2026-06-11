@@ -1,0 +1,80 @@
+# values-prod.yaml
+# Production environment overrides.
+# Passwords and secrets MUST be supplied via an external secrets manager
+# (e.g. HashiCorp Vault, AWS Secrets Manager, or Kubernetes ExternalSecret).
+
+# ─── Global ───────────────────────────────────────────────────────────────────
+global:
+  # Override to redirect all image pulls to an internal mirror.
+  # Leave empty to use the upstream Bitnami registry.
+  imageRegistry: ""
+  storageClass: "standard"
+
+# ─── nginx ────────────────────────────────────────────────────────────────────
+nginx:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+# ─── postgresql ───────────────────────────────────────────────────────────────
+postgresql:
+  auth:
+    # Supply passwords via external-secrets / vault agent in real deployments.
+    existingSecret: "postgresql-credentials"
+    secretKeys:
+      adminPasswordKey: "postgres-password"
+      userPasswordKey: "password"
+  primary:
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+  readReplicas:
+    replicaCount: 2
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+# ─── redis ────────────────────────────────────────────────────────────────────
+redis:
+  enabled: true
+  auth:
+    existingSecret: "redis-credentials"
+    existingSecretPasswordKey: "password"
+  master:
+    persistence:
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  replica:
+    replicaCount: 2
+    persistence:
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi

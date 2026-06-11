@@ -1,0 +1,31 @@
+apiVersion: v2
+name: demo-platform
+description: |
+  A production-grade reference Kubernetes platform chart.
+  Composes nginx (web entry point), postgresql (database), and redis (cache)
+  from upstream Bitnami charts as a single versioned release unit.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - platform
+  - nginx
+  - postgresql
+  - redis
+  - reference
+sources:
+  - https://github.com/h3ow3d/fishcake-factory
+maintainers:
+  - name: platform-team
+    url: https://github.com/h3ow3d
+dependencies:
+  - name: nginx
+    version: "~15.0.0"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+  - name: postgresql
+    version: "~13.0.0"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+  - name: redis
+    version: "~19.0.0"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: redis.enabled

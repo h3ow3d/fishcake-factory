@@ -1,0 +1,70 @@
+---
+# argocd/application.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# ArgoCD Application manifest for the demo-platform Helm chart.
+#
+# This deploys the versioned chart directly from the OCI registry (GHCR),
+# providing GitOps-style declarative management without needing a separate
+# Helm repository server.
+#
+# Deployment flow:
+#   1. Pipeline publishes demo-platform-<version>.tgz to GHCR OCI registry.
+#   2. ArgoCD polls the registry for the targetRevision declared here.
+#   3. On change, ArgoCD applies the rendered manifests to the target cluster.
+#
+# To update the deployed version, change targetRevision and commit this file.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-platform
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: demo-platform
+    app.kubernetes.io/managed-by: argocd
+  annotations:
+    # Link back to the supply chain pipeline that produced this version.
+    supply-chain/sbom-attestation: "cosign verify-attestation --type spdx ghcr.io/h3ow3d/charts/demo-platform:<version>"
+spec:
+  project: default
+
+  source:
+    # Pull the chart directly from the OCI registry published by the pipeline.
+    # Replace 'h3ow3d' with your GitHub organisation / username if forked.
+    repoURL: oci://ghcr.io/h3ow3d/charts
+    chart: demo-platform
+    # Pin to a specific release version for reproducible deployments.
+    # Update this field (and commit) to trigger a rollout.
+    targetRevision: "0.1.0"
+    helm:
+      # Override default values with production settings.
+      valueFiles:
+        - values-prod.yaml
+      # Example: redirect all image pulls to an internal registry mirror.
+      # values: |
+      #   global:
+      #     imageRegistry: "registry.internal.example.com"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-platform
+
+  syncPolicy:
+    automated:
+      # Remove resources from the cluster that are no longer in the chart.
+      prune: true
+      # Re-apply drifted resources automatically.
+      selfHeal: true
+    syncOptions:
+      # Create the target namespace if it does not exist.
+      - CreateNamespace=true
+      # Use server-side apply for better conflict handling.
+      - ServerSideApply=true
+
+  # Health checks ensure ArgoCD waits for all components to become healthy
+  # before marking the sync as complete.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas   # allow HPA to manage replica counts
