@@ -14,7 +14,6 @@ nginx:
   image:
     registry: docker.io
     repository: bitnami/nginx
-    tag: ""  # defaults to chart appVersion
 
   service:
     type: ClusterIP
@@ -41,7 +40,6 @@ postgresql:
   image:
     registry: docker.io
     repository: bitnami/postgresql
-    tag: ""
 
   auth:
     postgresPassword: ""   # set via sealed-secret / external-secrets in prod
@@ -74,7 +72,6 @@ redis:
   image:
     registry: docker.io
     repository: bitnami/redis
-    tag: ""
 
   auth:
     enabled: true
