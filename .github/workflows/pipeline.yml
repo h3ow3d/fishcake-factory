@@ -55,9 +55,11 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: Install yq
-        uses: mikefarah/yq-action@master
-        with:
-          cmd: yq --version
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
 
       - name: Resolve Helm dependencies
         run: helm dependency update ${{ env.CHART_DIR }}
