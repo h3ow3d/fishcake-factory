@@ -12,7 +12,7 @@ nginx:
   replicaCount: 1
 
   image:
-    registry: docker.io
+    registry: registry-1.docker.io
     repository: bitnami/nginx
 
   service:
@@ -38,7 +38,7 @@ postgresql:
   enabled: true
 
   image:
-    registry: docker.io
+    registry: registry-1.docker.io
     repository: bitnami/postgresql
 
   auth:
@@ -70,7 +70,7 @@ redis:
   enabled: false
 
   image:
-    registry: docker.io
+    registry: registry-1.docker.io
     repository: bitnami/redis
 
   auth:
