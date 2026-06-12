@@ -55,7 +55,7 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: Install yq
-        uses: mikefarah/yq-action@master
+        uses: mikefarah/yq@v4
         with:
           cmd: yq --version
 
