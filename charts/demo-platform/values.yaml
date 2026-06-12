@@ -12,9 +12,8 @@ nginx:
   replicaCount: 1
 
   image:
-    registry: docker.io
+    registry: registry-1.docker.io
     repository: bitnami/nginx
-    tag: ""  # defaults to chart appVersion
 
   service:
     type: ClusterIP
@@ -39,9 +38,8 @@ postgresql:
   enabled: true
 
   image:
-    registry: docker.io
+    registry: registry-1.docker.io
     repository: bitnami/postgresql
-    tag: ""
 
   auth:
     postgresPassword: ""   # set via sealed-secret / external-secrets in prod
@@ -72,9 +70,8 @@ redis:
   enabled: false
 
   image:
-    registry: docker.io
+    registry: registry-1.docker.io
     repository: bitnami/redis
-    tag: ""
 
   auth:
     enabled: true

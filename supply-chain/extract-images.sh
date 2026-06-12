@@ -28,7 +28,7 @@ echo "Extracting container images from $RENDERED_FILE ..."
 
 # Walk every node in the YAML and collect any field named 'image'.
 # The result is sorted and de-duplicated so the file is stable across runs.
-yq '.. | .image? // empty' "$RENDERED_FILE" \
+yq --no-doc '.. | .image? | select(tag == "!!str")' "$RENDERED_FILE" \
   | grep -v '^null$' \
   | sort -u \
   > "$OUTPUT_FILE"
